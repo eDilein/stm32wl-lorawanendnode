@@ -820,84 +820,35 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 static void SendTxData(uint8_t port)
 {
   /* USER CODE BEGIN SendTxData_1 */
-  uint8_t batteryLevel = GetBatteryLevel();
   sensor_t sensor_data;
   uint8_t bufferSize = 0;
-  smtc_modem_region_t region = LORAMAC_REGION_EU868;
 
-#ifdef CAYENNE_LPP
-  uint8_t channel = 0;
-#else
-  uint16_t pressure = 0;
-  int16_t temperature = 0;
-  uint16_t humidity = 0;
-  uint32_t i = 0;
-  int32_t latitude = 0;
-  int32_t longitude = 0;
-  uint16_t altitudeGps = 0;
-#endif /* CAYENNE_LPP */
 
-  EnvSensors_Read(&sensor_data);
+  /* 1. Lecturas reales del microcontrolador */
+    int16_t temp_raw = SYS_GetTemperatureLevel();
+    float temp_c = (float)(temp_raw >> 8);                         /* Extraer la parte entera en °C */
 
-  APP_LOG(TS_ON, VLEVEL_M, "VDDA: %d\r\n", batteryLevel);
-  APP_LOG(TS_ON, VLEVEL_M, "temp: %d\r\n", (int16_t)(sensor_data.temperature));
+    uint16_t batteryLevel = SYS_GetBatteryLevel();                  /* mV */
+    float vdda_v = (float)batteryLevel / 1000.0f;                  /* Voltios (3.30 V) */
 
-  smtc_modem_get_region(STACK_ID, &region);
+    /* 2. Logs por puerto serie */
+    APP_LOG(TS_ON, VLEVEL_M, "VDDA: %.2f V\r\n", vdda_v);
+    APP_LOG(TS_ON, VLEVEL_M, "Temp: %.1f C\r\n", temp_c);
 
-#ifdef CAYENNE_LPP
-  CayenneLppReset();
-  CayenneLppAddBarometricPressure(channel++, sensor_data.pressure);
-  CayenneLppAddTemperature(channel++, sensor_data.temperature);
-  CayenneLppAddRelativeHumidity(channel++, (uint16_t)(sensor_data.humidity));
+    /* 3. Empaquetado en Cayenne LPP */
+    uint8_t channel = 1;
 
-  if ((region == LORAMAC_REGION_US915) || (region == LORAMAC_REGION_AU915)
-      || (region == LORAMAC_REGION_AS923_GRP1))
-  {
-    CayenneLppAddDigitalInput(channel++, GetBatteryLevel());
-    CayenneLppAddDigitalOutput(channel++, AppLedStateOn);
-  }
+    CayenneLppReset();
+    /* Canal 1: Temperatura interna */
+    CayenneLppAddTemperature(channel++, temp_c);
 
-  CayenneLppCopy(AppDataBuffer);
-  bufferSize = CayenneLppGetSize();
-#else  /* not CAYENNE_LPP */
-  humidity    = (uint16_t)(sensor_data.humidity * 10);            /* in %*10     */
-  temperature = (int16_t)(sensor_data.temperature);
-  pressure = (uint16_t)(sensor_data.pressure * 100 / 10); /* in hPa / 10 */
+    /* Canal 2: Tensión analógica VDDA */
+    CayenneLppAddAnalogInput(channel++, vdda_v);
 
-  AppDataBuffer[i++] = HAL_GPIO_ReadPin(LED3_GPIO_Port, LED3_Pin);
-  AppDataBuffer[i++] = (uint8_t)((pressure >> 8) & 0xFF);
-  AppDataBuffer[i++] = (uint8_t)(pressure & 0xFF);
-  AppDataBuffer[i++] = (uint8_t)(temperature & 0xFF);
-  AppDataBuffer[i++] = (uint8_t)((humidity >> 8) & 0xFF);
-  AppDataBuffer[i++] = (uint8_t)(humidity & 0xFF);
+    CayenneLppCopy(AppDataBuffer);
+    bufferSize = CayenneLppGetSize();
 
-  if ((region == LORAMAC_REGION_US915) || (region == LORAMAC_REGION_AU915)
-      || (region == LORAMAC_REGION_AS923_GRP1))
-  {
-    AppDataBuffer[i++] = 0;
-    AppDataBuffer[i++] = 0;
-    AppDataBuffer[i++] = 0;
-    AppDataBuffer[i++] = 0;
-  }
-  else
-  {
-    latitude = sensor_data.latitude;
-    longitude = sensor_data.longitude;
-
-    AppDataBuffer[i++] = GetBatteryLevel();        /* 1 (very low) to 254 (fully charged) */
-    AppDataBuffer[i++] = (uint8_t)((latitude >> 16) & 0xFF);
-    AppDataBuffer[i++] = (uint8_t)((latitude >> 8) & 0xFF);
-    AppDataBuffer[i++] = (uint8_t)(latitude & 0xFF);
-    AppDataBuffer[i++] = (uint8_t)((longitude >> 16) & 0xFF);
-    AppDataBuffer[i++] = (uint8_t)((longitude >> 8) & 0xFF);
-    AppDataBuffer[i++] = (uint8_t)(longitude & 0xFF);
-    AppDataBuffer[i++] = (uint8_t)((altitudeGps >> 8) & 0xFF);
-    AppDataBuffer[i++] = (uint8_t)(altitudeGps & 0xFF);
-  }
-
-  bufferSize = i;
-#endif /* CAYENNE_LPP */
-
+  /* 4. Gestión del LED de Join y envío de la trama LoRaWAN */
   if (JoinLedTimer.IsRunning)
   {
     UTIL_TIMER_Stop(&JoinLedTimer);
@@ -910,8 +861,7 @@ static void SendTxData(uint8_t port)
   {
     smtc_modem_status_mask_t status_mask = 0;
     smtc_modem_get_status(STACK_ID, &status_mask);
-    /* Restart periodical uplink alarm */
-    /* It is set value by default APP_TX_DUTYCYCLE. If Certification mode is enabled or during join phase, the time is 10s */
+    /* Reiniciar temporizador periódico */
     if (CertMode || ((status_mask & SMTC_MODEM_STATUS_JOINED) != SMTC_MODEM_STATUS_JOINED))
     {
       ASSERT_SMTC_MODEM_RC(smtc_modem_alarm_start_timer(CERT_TX_DUTYCYCLE));
