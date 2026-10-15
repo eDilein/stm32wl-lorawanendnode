@@ -332,6 +332,10 @@ static Callbacks_t Callbacks =
   * @brief User application buffer
   */
 static uint8_t AppDataBuffer[LORAWAN_APP_DATA_BUFFER_MAX_SIZE];
+/**
+  * @brief Periodo de transmision dinamico en segundos
+  */
+static uint32_t TxDutyCycleTime = (APP_TX_DUTYCYCLE / 1000);
 
 #ifdef CAYENNE_LPP
 /**
@@ -680,16 +684,37 @@ static void EventCallback(void)
         break;
 
       case SMTC_MODEM_EVENT_DOWNDATA:
-        APP_LOG(TS_OFF, VLEVEL_M,  "Event received: DOWNDATA\r\n");
-        /* USER CODE BEGIN EventCallback_3 */
-        HAL_GPIO_WritePin(LED1_GPIO_Port, LED1_Pin, GPIO_PIN_SET); /* LED_BLUE */
-        UTIL_TIMER_Start(&RxLedTimer);
-        /* USER CODE END EventCallback_3 */
-        /* Get downlink data */
-        ASSERT_SMTC_MODEM_RC(smtc_modem_get_downlink_data(rx_payload, &rx_payload_size, &rx_metadata, &rx_remaining));
-        APP_LOG(TS_OFF, VLEVEL_M, "Data received on port %u\r\n", rx_metadata.fport);
-        /* APP_LOG(TS_OFF, VLEVEL_M, "Received payload", rx_payload, rx_payload_size ); */
-        break;
+              APP_LOG(TS_OFF, VLEVEL_M,  "Event received: DOWNDATA\r\n");
+              /* USER CODE BEGIN EventCallback_3 */
+              HAL_GPIO_WritePin(LED1_GPIO_Port, LED1_Pin, GPIO_PIN_SET); /* LED_BLUE */
+              UTIL_TIMER_Start(&RxLedTimer);
+              /* USER CODE END EventCallback_3 */
+              /* Get downlink data */
+              ASSERT_SMTC_MODEM_RC(smtc_modem_get_downlink_data(rx_payload, &rx_payload_size, &rx_metadata, &rx_remaining));
+              APP_LOG(TS_OFF, VLEVEL_M, "Data received on port %u\r\n", rx_metadata.fport);
+              /* APP_LOG(TS_OFF, VLEVEL_M, "Received payload", rx_payload, rx_payload_size ); */
+
+              /* Validar que el downlink llegue en el puerto 1 y con 2 bytes */
+	  if ((rx_metadata.fport == 1) && (rx_payload_size == 2))
+	  {
+		uint16_t new_interval_s = (rx_payload[0] << 8) | rx_payload[1];
+
+		/* Puedes dejar >= 10 si quieres probar con 10 segundos, o mantener >= 30 */
+		if (new_interval_s >= 10)
+		{
+		  TxDutyCycleTime = new_interval_s;
+		  APP_LOG(TS_ON, VLEVEL_M, "Nuevo intervalo configurado: %u s\r\n", TxDutyCycleTime);
+
+		  /* REPROGRAMAR EL TEMPORIZADOR DEL MODEM INMEDIATAMENTE */
+		  smtc_modem_alarm_clear_timer();
+		  ASSERT_SMTC_MODEM_RC(smtc_modem_alarm_start_timer(TxDutyCycleTime));
+		}
+		else
+		{
+		  APP_LOG(TS_ON, VLEVEL_M, "Intervalo rechazado: %u\r\n", new_interval_s);
+		}
+	  }
+	  break;
 
       case SMTC_MODEM_EVENT_JOINFAIL:
         APP_LOG(TS_OFF, VLEVEL_M,  "Event received: JOINFAIL\r\n");
@@ -868,7 +893,7 @@ static void SendTxData(uint8_t port)
     }
     else
     {
-      ASSERT_SMTC_MODEM_RC(smtc_modem_alarm_start_timer(APP_TX_DUTYCYCLE));
+    	ASSERT_SMTC_MODEM_RC(smtc_modem_alarm_start_timer(TxDutyCycleTime));
     }
   }
   /* USER CODE END SendTxData_1 */

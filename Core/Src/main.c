@@ -89,6 +89,11 @@ int main(void)
   MX_LoRaWAN_Init();
   /* USER CODE BEGIN 2 */
 
+  /* Desactivar el soporte del debugger en modos Sleep, Stop y Standby */
+  HAL_DBGMCU_DisableDBGSleepMode();
+  HAL_DBGMCU_DisableDBGStopMode();
+  HAL_DBGMCU_DisableDBGStandbyMode();
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -114,6 +119,8 @@ void SystemClock_Config(void)
 
   /** Configure LSE Drive Capability
   */
+
+
   HAL_PWR_EnableBkUpAccess();
   __HAL_RCC_LSEDRIVE_CONFIG(RCC_LSEDRIVE_LOW);
 
