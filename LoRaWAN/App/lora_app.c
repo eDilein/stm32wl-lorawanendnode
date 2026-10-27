@@ -37,7 +37,6 @@
 #include "sys_sensors.h"
 #include "flash_if.h"
 #include "rng.h"
-
 #include "lorawan_api.h"
 #include "stm32_lpm.h"
 
@@ -111,7 +110,6 @@ typedef enum TxEventType_e
 #define ADDR_FLASH_MODEM_CONTEXT                (void *)(LORAWAN_NVM_BASE_ADDRESS + LORAWAN_CONTEXT_SIZE)
 #define ADDR_FLASH_SECURE_ELEMENT_CONTEXT       (void *)(LORAWAN_NVM_BASE_ADDRESS + LORAWAN_CONTEXT_SIZE + MODEM_CONTEXT_SIZE)
 
-
 /* USER CODE BEGIN PD */
 
 /* USER CODE END PD */
@@ -183,8 +181,6 @@ typedef enum TxEventType_e
   * @brief  LoRa End Node send request
   */
 static void SendTxData(uint8_t port);
-
-
 #if defined (LOW_POWER_DISABLE) && (LOW_POWER_DISABLE == 0)
 /**
   * @brief  Sleep timer callback function
@@ -264,8 +260,6 @@ static uint8_t user_dev_eui[8]      = FORMAT32_KEY(LORAWAN_DEVICE_EUI);
 static uint8_t user_join_eui[8]     = FORMAT32_KEY(LORAWAN_JOIN_EUI);
 static uint8_t user_gen_app_key[16] = FORMAT_KEY(LORAWAN_GEN_APP_KEY);
 static uint8_t user_app_key[16]     = FORMAT_KEY(LORAWAN_APP_KEY);
-
-
 /**
   * @brief  Buffer for rx payload
   */
@@ -328,14 +322,13 @@ static Callbacks_t Callbacks =
 };
 
 /* USER CODE BEGIN PV */
-/**
-  * @brief User application buffer
-  */
 static uint8_t AppDataBuffer[LORAWAN_APP_DATA_BUFFER_MAX_SIZE];
-/**
-  * @brief Periodo de transmision dinamico en segundos
-  */
-static uint32_t TxDutyCycleTime = (APP_TX_DUTYCYCLE / 1000);
+
+/* Inicializar directamente en 600 segundos para que CubeMX no lo altere desde lora_app.h */
+static uint32_t TxDutyCycleTime = 600;
+
+/* Contador para los 3 destellos asíncronos (sin HAL_Delay) */
+static volatile uint8_t tx_led_blink_count = 0;
 
 #ifdef CAYENNE_LPP
 /**
@@ -418,7 +411,7 @@ void LoRaWAN_Init(void)
           (uint8_t)(rp_version.minor),
           (uint8_t)(rp_version.patch));
 
-  UTIL_TIMER_Create(&TxLedTimer, LED_PERIOD_TIME, UTIL_TIMER_ONESHOT, OnTxTimerLedEvent, NULL);
+  UTIL_TIMER_Create(&TxLedTimer, 150, UTIL_TIMER_ONESHOT, OnTxTimerLedEvent, NULL);
   UTIL_TIMER_Create(&RxLedTimer, LED_PERIOD_TIME, UTIL_TIMER_ONESHOT, OnRxTimerLedEvent, NULL);
   UTIL_TIMER_Create(&JoinLedTimer, LED_PERIOD_TIME, UTIL_TIMER_PERIODIC, OnJoinTimerLedEvent, NULL);
 
@@ -444,11 +437,13 @@ void LoRaWAN_Init(void)
   smtc_modem_set_crystal_error_ppm(BSP_CRYSTAL_ERROR);
 
   /* USER CODE BEGIN LoRaWAN_Init_Last */
-  UTIL_TIMER_Start(&JoinLedTimer);
-
-  /* USER CODE END LoRaWAN_Init_Last */
+    UTIL_TIMER_Start(&JoinLedTimer);
+    if ((TxDutyCycleTime < 10) || (TxDutyCycleTime > 7200))
+    {
+      TxDutyCycleTime = 600; // Valor por defecto seguro de 10 minutos (600 s)
+    }
+    /* USER CODE END LoRaWAN_Init_Last */
 }
-
 
 void LoRaWAN_Process(void)
 {
@@ -486,7 +481,6 @@ void LoRaWAN_Process(void)
   }
 
 }
-
 
 static void SystemReset(void)
 {
@@ -555,7 +549,6 @@ static void RestoreContext(const modem_context_type_t ctx_type, uint32_t offset,
 
   /* USER CODE END RestoreContext_Last */
 }
-
 
 static void StoreContext(const modem_context_type_t ctx_type, uint32_t offset, const uint8_t *buffer,
                          const uint32_t size)
@@ -653,11 +646,11 @@ static void EventCallback(void)
         APP_LOG(TS_OFF, VLEVEL_M,  "Event received: JOINED\r\n");
         APP_LOG(TS_OFF, VLEVEL_H,  "Modem is now joined \r\n");
         /* USER CODE BEGIN EventCallback_1 */
-        if (JoinLedTimer.IsRunning)
-        {
-          UTIL_TIMER_Stop(&JoinLedTimer);
-          HAL_GPIO_WritePin(LED3_GPIO_Port, LED3_Pin, GPIO_PIN_RESET); /* LED_RED */
-        }
+              if (JoinLedTimer.IsRunning)
+              {
+                UTIL_TIMER_Stop(&JoinLedTimer);
+                HAL_GPIO_WritePin(LED3_GPIO_Port, LED3_Pin, GPIO_PIN_RESET); /* LED_RED */
+              }
         /* USER CODE END EventCallback_1 */
         if (CertMode == false)
         {
@@ -670,51 +663,108 @@ static void EventCallback(void)
         break;
 
       case SMTC_MODEM_EVENT_TXDONE:
-        APP_LOG(TS_OFF, VLEVEL_M,  "Event received: TXDONE\r\n");
-        APP_LOG(TS_OFF, VLEVEL_H,  "Transmission done \r\n");
-        smtc_modem_get_status(STACK_ID, &status_mask);
-        /* USER CODE BEGIN EventCallback_2 */
-        /* Check if the device has already joined a network */
-        if ((JoinLedTimer.IsRunning) && (status_mask & SMTC_MODEM_STATUS_JOINED) == SMTC_MODEM_STATUS_JOINED)
-        {
-          UTIL_TIMER_Stop(&JoinLedTimer);
-          HAL_GPIO_WritePin(LED3_GPIO_Port, LED3_Pin, GPIO_PIN_RESET); /* LED_RED */
-        }
-        /* USER CODE END EventCallback_2 */
-        break;
+              APP_LOG(TS_OFF, VLEVEL_M,  "Event received: TXDONE\r\n");
+              APP_LOG(TS_OFF, VLEVEL_H,  "Transmission done \r\n");
+              smtc_modem_get_status(STACK_ID, &status_mask);
+              /* USER CODE BEGIN EventCallback_2 */
+
+              /* 1. Encender el LED verde fijo indicando estado OK en espera */
+              /* 👉 Iniciar los 3 destellos del LED verde sin bloquear (sin HAL_Delay) */
+                tx_led_blink_count = 5; /* 5 cambios de estado adicionales = 3 parpadeos completos */
+                HAL_GPIO_WritePin(LED2_GPIO_Port, LED2_Pin, GPIO_PIN_RESET); /* Apagar (venía fijo de Idle) */
+                UTIL_TIMER_Start(&TxLedTimer);
+
+              if ((JoinLedTimer.IsRunning) && (status_mask & SMTC_MODEM_STATUS_JOINED) == SMTC_MODEM_STATUS_JOINED)
+              {
+                UTIL_TIMER_Stop(&JoinLedTimer);
+                HAL_GPIO_WritePin(LED3_GPIO_Port, LED3_Pin, GPIO_PIN_RESET); /* Apagar LED rojo */
+              }
+
+              /* 2. Programar el siguiente envío periódico */
+              if (CertMode == false && ((status_mask & SMTC_MODEM_STATUS_JOINED) == SMTC_MODEM_STATUS_JOINED))
+              {
+                smtc_modem_alarm_clear_timer();
+                ASSERT_SMTC_MODEM_RC(smtc_modem_alarm_start_timer(TxDutyCycleTime));
+              }
+
+              /* USER CODE END EventCallback_2 */
+              break;
 
       case SMTC_MODEM_EVENT_DOWNDATA:
               APP_LOG(TS_OFF, VLEVEL_M,  "Event received: DOWNDATA\r\n");
               /* USER CODE BEGIN EventCallback_3 */
               HAL_GPIO_WritePin(LED1_GPIO_Port, LED1_Pin, GPIO_PIN_SET); /* LED_BLUE */
               UTIL_TIMER_Start(&RxLedTimer);
-              /* USER CODE END EventCallback_3 */
-              /* Get downlink data */
+
+              /* 1. Obtener los datos del módem dentro del bloque seguro */
               ASSERT_SMTC_MODEM_RC(smtc_modem_get_downlink_data(rx_payload, &rx_payload_size, &rx_metadata, &rx_remaining));
-              APP_LOG(TS_OFF, VLEVEL_M, "Data received on port %u\r\n", rx_metadata.fport);
-              /* APP_LOG(TS_OFF, VLEVEL_M, "Received payload", rx_payload, rx_payload_size ); */
+              APP_LOG(TS_OFF, VLEVEL_M, "Data received on port %u, size %u\r\n", rx_metadata.fport, rx_payload_size);
 
-              /* Validar que el downlink llegue en el puerto 1 y con 2 bytes */
-	  if ((rx_metadata.fport == 1) && (rx_payload_size == 2))
-	  {
-		uint16_t new_interval_s = (rx_payload[0] << 8) | rx_payload[1];
+              /* 2. Decodificador general de tramas Cayenne LPP */
+              uint8_t i = 0;
+              while (i < rx_payload_size)
+              {
+                uint8_t channel = rx_payload[i++];
+                uint8_t type    = rx_payload[i++];
 
-		/* Puedes dejar >= 10 si quieres probar con 10 segundos, o mantener >= 30 */
-		if (new_interval_s >= 10)
-		{
-		  TxDutyCycleTime = new_interval_s;
-		  APP_LOG(TS_ON, VLEVEL_M, "Nuevo intervalo configurado: %u s\r\n", TxDutyCycleTime);
+                /* Tipo 0x01: Digital Output (Relay en Canal 10) */
+                if (type == 0x01 && (i < rx_payload_size))
+                {
+                  uint8_t relay_val = rx_payload[i++];
 
-		  /* REPROGRAMAR EL TEMPORIZADOR DEL MODEM INMEDIATAMENTE */
-		  smtc_modem_alarm_clear_timer();
-		  ASSERT_SMTC_MODEM_RC(smtc_modem_alarm_start_timer(TxDutyCycleTime));
-		}
-		else
-		{
-		  APP_LOG(TS_ON, VLEVEL_M, "Intervalo rechazado: %u\r\n", new_interval_s);
-		}
-	  }
-	  break;
+                  if (channel == 10)
+                  {
+                    if (relay_val == 0x01)
+                    {
+                      HAL_GPIO_WritePin(Relay_GPIO_Port, Relay_Pin, GPIO_PIN_SET);
+                      APP_LOG(TS_ON, VLEVEL_M, "Cayenne LPP Ch %d: RELAY -> ON\r\n", channel);
+                    }
+                    else
+                    {
+                      HAL_GPIO_WritePin(Relay_GPIO_Port, Relay_Pin, GPIO_PIN_RESET);
+                      APP_LOG(TS_ON, VLEVEL_M, "Cayenne LPP Ch %d: RELAY -> OFF\r\n", channel);
+                    }
+                  }
+                }
+                /* Tipo 0x02 o 0x03: Analog Input/Output para el Intervalo (Canal 11) */
+				else if ((type == 0x02 || type == 0x03) && (i + 1 < rx_payload_size))
+				{
+				  /* Usar uint16_t (sin signo) para soportar hasta 65535 (655.35 s con factor 100) */
+				  uint16_t raw_val = (uint16_t)((rx_payload[i] << 8) | rx_payload[i + 1]);
+				  i += 2;
+
+				  /* Si viene multiplicado por 100 desde el encoder Cayenne LPP (ej. 60000), dividir por 100 */
+				  uint16_t new_interval_s = (raw_val >= 1000) ? (raw_val / 100) : raw_val;
+
+				  if (channel == 11)
+				  {
+					if (new_interval_s >= 10)
+					{
+					  TxDutyCycleTime = new_interval_s;
+					  APP_LOG(TS_ON, VLEVEL_M, "Cayenne LPP Ch %d: Nuevo intervalo configurado -> %u s\r\n", channel, TxDutyCycleTime);
+
+					  /* Reprogramar la alarma del módem con el nuevo intervalo en segundos */
+					  smtc_modem_alarm_clear_timer();
+					  ASSERT_SMTC_MODEM_RC(smtc_modem_alarm_start_timer(TxDutyCycleTime));
+					}
+					else
+					{
+					  APP_LOG(TS_ON, VLEVEL_M, "Cayenne LPP Ch %d: Intervalo rechazado -> %u s\r\n", channel, new_interval_s);
+					}
+				  }
+				}
+                else
+                {
+                  break;
+                }
+              }
+			 break; /* <-- Colocar aquí adentro para saltar la lectura duplicada de ST */
+			 /* USER CODE END EventCallback_3 */
+	   /* Get downlink data */
+	   ASSERT_SMTC_MODEM_RC(smtc_modem_get_downlink_data(rx_payload, &rx_payload_size, &rx_metadata, &rx_remaining));
+        APP_LOG(TS_OFF, VLEVEL_M, "Data received on port %u\r\n", rx_metadata.fport);
+        /* APP_LOG(TS_OFF, VLEVEL_M, "Received payload", rx_payload, rx_payload_size ); */
+        break;
 
       case SMTC_MODEM_EVENT_JOINFAIL:
         APP_LOG(TS_OFF, VLEVEL_M,  "Event received: JOINFAIL\r\n");
@@ -848,30 +898,40 @@ static void SendTxData(uint8_t port)
   sensor_t sensor_data;
   uint8_t bufferSize = 0;
 
+  /* 👉 En lugar de HAL_Delay (que bloquea la red), encendemos el LED
+     para indicar actividad de transmisión */
+  HAL_GPIO_WritePin(LED2_GPIO_Port, LED2_Pin, GPIO_PIN_SET);
 
   /* 1. Lecturas reales del microcontrolador */
-    int16_t temp_raw = SYS_GetTemperatureLevel();
-    float temp_c = (float)(temp_raw >> 8);                         /* Extraer la parte entera en °C */
+  int16_t temp_raw = SYS_GetTemperatureLevel();
+  float temp_c = (float)(temp_raw >> 8);                         /* Extraer la parte entera en °C */
 
-    uint16_t batteryLevel = SYS_GetBatteryLevel();                  /* mV */
-    float vdda_v = (float)batteryLevel / 1000.0f;                  /* Voltios (3.30 V) */
+  uint16_t batteryLevel = SYS_GetBatteryLevel();                  /* mV */
+  float vdda_v = (float)batteryLevel / 1000.0f;                  /* Voltios (3.30 V) */
 
-    /* 2. Logs por puerto serie */
-    APP_LOG(TS_ON, VLEVEL_M, "VDDA: %.2f V\r\n", vdda_v);
-    APP_LOG(TS_ON, VLEVEL_M, "Temp: %.1f C\r\n", temp_c);
+  /* 2. Logs por puerto serie */
+  APP_LOG(TS_ON, VLEVEL_M, "VDDA: %.2f V\r\n", vdda_v);
+  APP_LOG(TS_ON, VLEVEL_M, "Temp: %.1f C\r\n", temp_c);
 
-    /* 3. Empaquetado en Cayenne LPP */
-    uint8_t channel = 1;
+  /* 3. Empaquetado en Cayenne LPP */
+  uint8_t channel = 1;
 
-    CayenneLppReset();
-    /* Canal 1: Temperatura interna */
-    CayenneLppAddTemperature(channel++, temp_c);
+  CayenneLppReset();
+  /* Canal 1: Temperatura interna */
+  CayenneLppAddTemperature(channel++, temp_c);
 
-    /* Canal 2: Tensión analógica VDDA */
-    CayenneLppAddAnalogInput(channel++, vdda_v);
+  /* Canal 2: Tensión analógica VDDA */
+  CayenneLppAddAnalogInput(channel++, vdda_v);
 
-    CayenneLppCopy(AppDataBuffer);
-    bufferSize = CayenneLppGetSize();
+  /* Canal 11: CayenneLppAddAnalogInput multiplica por 100 internamente (envía 600 como 0x0258) */
+    CayenneLppAddAnalogInput(11, (float)TxDutyCycleTime / 100.0f);
+
+  /* Estado actual del Relé (Canal 10) */
+  uint8_t relay_state = (HAL_GPIO_ReadPin(Relay_GPIO_Port, Relay_Pin) == GPIO_PIN_SET) ? 1 : 0;
+  CayenneLppAddDigitalOutput(10, relay_state);
+
+  CayenneLppCopy(AppDataBuffer);
+  bufferSize = CayenneLppGetSize();
 
   /* 4. Gestión del LED de Join y envío de la trama LoRaWAN */
   if (JoinLedTimer.IsRunning)
@@ -882,27 +942,22 @@ static void SendTxData(uint8_t port)
 
   ASSERT_SMTC_MODEM_RC(smtc_modem_request_uplink(STACK_ID, port, false, AppDataBuffer, bufferSize));
 
-  if (EventType == TX_ON_TIMER)
-  {
-    smtc_modem_status_mask_t status_mask = 0;
-    smtc_modem_get_status(STACK_ID, &status_mask);
-    /* Reiniciar temporizador periódico */
-    if (CertMode || ((status_mask & SMTC_MODEM_STATUS_JOINED) != SMTC_MODEM_STATUS_JOINED))
-    {
-      ASSERT_SMTC_MODEM_RC(smtc_modem_alarm_start_timer(CERT_TX_DUTYCYCLE));
-    }
-    else
-    {
-    	ASSERT_SMTC_MODEM_RC(smtc_modem_alarm_start_timer(TxDutyCycleTime));
-    }
-  }
   /* USER CODE END SendTxData_1 */
 }
 
 /* USER CODE BEGIN PrFD_LedEvents */
 static void OnTxTimerLedEvent(void *context)
 {
-  HAL_GPIO_WritePin(LED2_GPIO_Port, LED2_Pin, GPIO_PIN_RESET); /* LED_GREEN */
+  if (tx_led_blink_count > 0)
+  {
+    tx_led_blink_count--;
+    HAL_GPIO_TogglePin(LED2_GPIO_Port, LED2_Pin); /* Alterna ON / OFF cada 150 ms */
+    UTIL_TIMER_Start(&TxLedTimer);                /* Programa el siguiente cambio */
+  }
+  else
+  {
+    HAL_GPIO_WritePin(LED2_GPIO_Port, LED2_Pin, GPIO_PIN_SET); /* 👈 Queda encendido fijo (Idle) al terminar los destellos */
+  }
 }
 
 static void OnRxTimerLedEvent(void *context)
@@ -930,6 +985,5 @@ static void OnSleepTimerEvent(void *context)
   /* USER CODE END OnSleepTimerEvent_Last */
 }
 #endif /*(LOW_POWER_DISABLE) && (LOW_POWER_DISABLE == 0) */
-
 
 /* --- EOF ------------------------------------------------------------------ */

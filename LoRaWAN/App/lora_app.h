@@ -51,7 +51,7 @@ extern "C" {
 /*!
  * Defines the application data transmission duty cycle. 10s, value in [s].
  */
-#define APP_TX_DUTYCYCLE                            600
+#define APP_TX_DUTYCYCLE                            10
 
 /*!
  * LoRaWAN User application port
@@ -78,6 +78,8 @@ extern "C" {
 #define LORAWAN_APP_DATA_BUFFER_MAX_SIZE            242
 
 /* USER CODE BEGIN EC */
+#undef APP_TX_DUTYCYCLE
+#define APP_TX_DUTYCYCLE                            600
 
 /* USER CODE END EC */
 
