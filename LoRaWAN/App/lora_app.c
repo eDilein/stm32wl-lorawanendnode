@@ -249,6 +249,9 @@ static void OnRxTimerLedEvent(void *context);
   */
 static void OnJoinTimerLedEvent(void *context);
 
+static void OnJoinTimerLedEvent(void *context);
+static int32_t HX711_ReadRaw(void); /* <-- Agregar esta línea en USER CODE BEGIN PFP */
+
 /* USER CODE END PFP */
 
 /* Private variables ---------------------------------------------------------*/
@@ -352,6 +355,9 @@ static UTIL_TIMER_Object_t RxLedTimer;
   */
 static UTIL_TIMER_Object_t JoinLedTimer;
 
+static int32_t HX711_Offset = -318377; /* Tara real en vacío (0 kg) */
+static float   HX711_Scale  = 26.10f;  /* Factor de escala calibrado con 8 kg */
+
 /* USER CODE END PV */
 
 /* Exported functions ---------------------------------------------------------*/
@@ -442,7 +448,7 @@ void LoRaWAN_Init(void)
     {
       TxDutyCycleTime = 600; // Valor por defecto seguro de 10 minutos (600 s)
     }
-    /* USER CODE END LoRaWAN_Init_Last */
+  /* USER CODE END LoRaWAN_Init_Last */
 }
 
 void LoRaWAN_Process(void)
@@ -663,10 +669,10 @@ static void EventCallback(void)
         break;
 
       case SMTC_MODEM_EVENT_TXDONE:
-              APP_LOG(TS_OFF, VLEVEL_M,  "Event received: TXDONE\r\n");
-              APP_LOG(TS_OFF, VLEVEL_H,  "Transmission done \r\n");
-              smtc_modem_get_status(STACK_ID, &status_mask);
-              /* USER CODE BEGIN EventCallback_2 */
+        APP_LOG(TS_OFF, VLEVEL_M,  "Event received: TXDONE\r\n");
+        APP_LOG(TS_OFF, VLEVEL_H,  "Transmission done \r\n");
+        smtc_modem_get_status(STACK_ID, &status_mask);
+        /* USER CODE BEGIN EventCallback_2 */
 
               /* 1. Encender el LED verde fijo indicando estado OK en espera */
               /* 👉 Iniciar los 3 destellos del LED verde sin bloquear (sin HAL_Delay) */
@@ -687,12 +693,12 @@ static void EventCallback(void)
                 ASSERT_SMTC_MODEM_RC(smtc_modem_alarm_start_timer(TxDutyCycleTime));
               }
 
-              /* USER CODE END EventCallback_2 */
-              break;
+        /* USER CODE END EventCallback_2 */
+        break;
 
       case SMTC_MODEM_EVENT_DOWNDATA:
-              APP_LOG(TS_OFF, VLEVEL_M,  "Event received: DOWNDATA\r\n");
-              /* USER CODE BEGIN EventCallback_3 */
+        APP_LOG(TS_OFF, VLEVEL_M,  "Event received: DOWNDATA\r\n");
+        /* USER CODE BEGIN EventCallback_3 */
               HAL_GPIO_WritePin(LED1_GPIO_Port, LED1_Pin, GPIO_PIN_SET); /* LED_BLUE */
               UTIL_TIMER_Start(&RxLedTimer);
 
@@ -759,9 +765,9 @@ static void EventCallback(void)
                 }
               }
 			 break; /* <-- Colocar aquí adentro para saltar la lectura duplicada de ST */
-			 /* USER CODE END EventCallback_3 */
-	   /* Get downlink data */
-	   ASSERT_SMTC_MODEM_RC(smtc_modem_get_downlink_data(rx_payload, &rx_payload_size, &rx_metadata, &rx_remaining));
+        /* USER CODE END EventCallback_3 */
+        /* Get downlink data */
+        ASSERT_SMTC_MODEM_RC(smtc_modem_get_downlink_data(rx_payload, &rx_payload_size, &rx_metadata, &rx_remaining));
         APP_LOG(TS_OFF, VLEVEL_M, "Data received on port %u\r\n", rx_metadata.fport);
         /* APP_LOG(TS_OFF, VLEVEL_M, "Received payload", rx_payload, rx_payload_size ); */
         break;
@@ -898,22 +904,17 @@ static void SendTxData(uint8_t port)
   sensor_t sensor_data;
   uint8_t bufferSize = 0;
 
-  /* 👉 En lugar de HAL_Delay (que bloquea la red), encendemos el LED
-     para indicar actividad de transmisión */
+  /* Encender el LED para indicar actividad de transmisión */
   HAL_GPIO_WritePin(LED2_GPIO_Port, LED2_Pin, GPIO_PIN_SET);
 
   /* 1. Lecturas reales del microcontrolador */
   int16_t temp_raw = SYS_GetTemperatureLevel();
-  float temp_c = (float)(temp_raw >> 8);                         /* Extraer la parte entera en °C */
+  float temp_c = (float)(temp_raw >> 8);
 
-  uint16_t batteryLevel = SYS_GetBatteryLevel();                  /* mV */
-  float vdda_v = (float)batteryLevel / 1000.0f;                  /* Voltios (3.30 V) */
+  uint16_t batteryLevel = SYS_GetBatteryLevel();
+  float vdda_v = (float)batteryLevel / 1000.0f;
 
-  /* 2. Logs por puerto serie */
-  APP_LOG(TS_ON, VLEVEL_M, "VDDA: %.2f V\r\n", vdda_v);
-  APP_LOG(TS_ON, VLEVEL_M, "Temp: %.1f C\r\n", temp_c);
-
-  /* 3. Empaquetado en Cayenne LPP */
+  /* 2. Empaquetado en Cayenne LPP */
   uint8_t channel = 1;
 
   CayenneLppReset();
@@ -923,13 +924,32 @@ static void SendTxData(uint8_t port)
   /* Canal 2: Tensión analógica VDDA */
   CayenneLppAddAnalogInput(channel++, vdda_v);
 
-  /* Canal 11: CayenneLppAddAnalogInput multiplica por 100 internamente (envía 600 como 0x0258) */
-    CayenneLppAddAnalogInput(11, (float)TxDutyCycleTime / 100.0f);
+  /* Canal 11: Intervalo TxDutyCycleTime */
+  CayenneLppAddAnalogInput(11, (float)TxDutyCycleTime / 100.0f);
 
-  /* Estado actual del Relé (Canal 10) */
+  /* Canal 10: Estado actual del Relé */
   uint8_t relay_state = (HAL_GPIO_ReadPin(Relay_GPIO_Port, Relay_Pin) == GPIO_PIN_SET) ? 1 : 0;
   CayenneLppAddDigitalOutput(10, relay_state);
 
+  /* Canal 3: Lectura y cálculo del HX711 */
+  int32_t raw_hx711 = HX711_ReadRaw();
+  int32_t weight_grams = 0;
+  float weight_kg = 0.0f;
+
+  if (raw_hx711 != -1 && raw_hx711 != 0)
+  {
+    int32_t diff = raw_hx711 - HX711_Offset;
+    weight_grams = (int32_t)((float)diff / HX711_Scale);
+    weight_kg = (float)weight_grams / 1000.0f;
+  }
+
+  /* 3. Logs por puerto serie usando enteros limpios (%d es de 32 bits en Cortex-M4) */
+  APP_LOG(TS_ON, VLEVEL_M, "VDDA mV: %u | Temp C: %d\r\n", batteryLevel, (int)(temp_c));
+  APP_LOG(TS_ON, VLEVEL_M, "HX711 Raw: %d | Peso: %d g\r\n", (int)raw_hx711, (int)weight_grams);
+
+  CayenneLppAddAnalogInput(3, weight_kg);
+
+  /* Copiar al buffer de la aplicación */
   CayenneLppCopy(AppDataBuffer);
   bufferSize = CayenneLppGetSize();
 
@@ -937,7 +957,7 @@ static void SendTxData(uint8_t port)
   if (JoinLedTimer.IsRunning)
   {
     UTIL_TIMER_Stop(&JoinLedTimer);
-    HAL_GPIO_WritePin(LED3_GPIO_Port, LED3_Pin, GPIO_PIN_RESET); /* LED_RED */
+    HAL_GPIO_WritePin(LED3_GPIO_Port, LED3_Pin, GPIO_PIN_RESET);
   }
 
   ASSERT_SMTC_MODEM_RC(smtc_modem_request_uplink(STACK_ID, port, false, AppDataBuffer, bufferSize));
@@ -968,6 +988,48 @@ static void OnRxTimerLedEvent(void *context)
 static void OnJoinTimerLedEvent(void *context)
 {
   HAL_GPIO_TogglePin(LED3_GPIO_Port, LED3_Pin); /* LED_RED */
+}
+
+static inline void HX711_DelayUs(void)
+{
+  for (volatile uint32_t i = 0; i < 20; i++) { __NOP(); }
+}
+
+static int32_t HX711_ReadRaw(void)
+{
+  uint32_t count = 0;
+
+  /* Despertar HX711 (SCK en LOW) y esperar conversión (~400 ms) */
+  HAL_GPIO_WritePin(HX711_SCK_GPIO_Port, HX711_SCK_Pin, GPIO_PIN_RESET);
+  uint32_t tickstart = HAL_GetTick();
+  while (HAL_GPIO_ReadPin(HX711_DOUT_GPIO_Port, HX711_DOUT_Pin) == GPIO_PIN_SET)
+  {
+    if ((HAL_GetTick() - tickstart) > 600U) return -1; /* Timeout */
+  }
+
+  /* Leer 24 bits + 1 pulso (Canal A, Ganancia 128) sin interrupciones */
+  uint32_t primask = __get_PRIMASK();
+  __disable_irq();
+  for (uint8_t i = 0; i < 24; i++)
+  {
+    HAL_GPIO_WritePin(HX711_SCK_GPIO_Port, HX711_SCK_Pin, GPIO_PIN_SET);
+    HX711_DelayUs();
+    count <<= 1;
+    HAL_GPIO_WritePin(HX711_SCK_GPIO_Port, HX711_SCK_Pin, GPIO_PIN_RESET);
+    HX711_DelayUs();
+    if (HAL_GPIO_ReadPin(HX711_DOUT_GPIO_Port, HX711_DOUT_Pin) == GPIO_PIN_SET) count++;
+  }
+  HAL_GPIO_WritePin(HX711_SCK_GPIO_Port, HX711_SCK_Pin, GPIO_PIN_SET);
+  HX711_DelayUs();
+  HAL_GPIO_WritePin(HX711_SCK_GPIO_Port, HX711_SCK_Pin, GPIO_PIN_RESET);
+  HX711_DelayUs();
+  __set_PRIMASK(primask);
+
+  /* Devolver SCK a LOW para mantener el sensor activo y el pin limpio */
+    HAL_GPIO_WritePin(HX711_SCK_GPIO_Port, HX711_SCK_Pin, GPIO_PIN_RESET);
+
+    if (count & 0x800000) count |= 0xFF000000; /* Extensión de signo 24->32 bits */
+    return (int32_t)count;
 }
 
 /* USER CODE END PrFD_LedEvents */

@@ -51,7 +51,7 @@ void MX_GPIO_Init(void)
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOB, LED1_Pin|LED2_Pin|PROB2_Pin|PROB1_Pin
-                          |LED3_Pin, GPIO_PIN_RESET);
+                          |LED3_Pin|HX711_SCK_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(Relay_GPIO_Port, Relay_Pin, GPIO_PIN_RESET);
@@ -76,12 +76,18 @@ void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : PROB2_Pin PROB1_Pin */
-  GPIO_InitStruct.Pin = PROB2_Pin|PROB1_Pin;
+  /*Configure GPIO pins : PROB2_Pin PROB1_Pin HX711_SCK_Pin */
+  GPIO_InitStruct.Pin = PROB2_Pin|PROB1_Pin|HX711_SCK_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : HX711_DOUT_Pin */
+  GPIO_InitStruct.Pin = HX711_DOUT_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(HX711_DOUT_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pin : BUT3_Pin */
   GPIO_InitStruct.Pin = BUT3_Pin;

@@ -71,6 +71,8 @@ void Error_Handler(void);
 #define BUT1_EXTI_IRQn EXTI0_IRQn
 #define PROB2_Pin GPIO_PIN_13
 #define PROB2_GPIO_Port GPIOB
+#define HX711_DOUT_Pin GPIO_PIN_9
+#define HX711_DOUT_GPIO_Port GPIOA
 #define PROB1_Pin GPIO_PIN_12
 #define PROB1_GPIO_Port GPIOB
 #define BUT3_Pin GPIO_PIN_6
@@ -85,6 +87,8 @@ void Error_Handler(void);
 #define USARTx_RX_GPIO_Port GPIOA
 #define USARTx_TX_Pin GPIO_PIN_2
 #define USARTx_TX_GPIO_Port GPIOA
+#define HX711_SCK_Pin GPIO_PIN_10
+#define HX711_SCK_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
 
