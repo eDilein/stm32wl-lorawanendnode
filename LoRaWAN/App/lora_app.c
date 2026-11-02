@@ -995,19 +995,21 @@ static inline void HX711_DelayUs(void)
   for (volatile uint32_t i = 0; i < 20; i++) { __NOP(); }
 }
 
-static int32_t HX711_ReadRaw(void)
+static int32_t HX711_ReadSingle(void)
 {
   uint32_t count = 0;
 
-  /* Despertar HX711 (SCK en LOW) y esperar conversión (~400 ms) */
+  /* 1. Despertar / Asegurar SCK en LOW y esperar que DOUT baje */
   HAL_GPIO_WritePin(HX711_SCK_GPIO_Port, HX711_SCK_Pin, GPIO_PIN_RESET);
+  for (volatile uint32_t i = 0; i < 50; i++) { __NOP(); }
+
   uint32_t tickstart = HAL_GetTick();
   while (HAL_GPIO_ReadPin(HX711_DOUT_GPIO_Port, HX711_DOUT_Pin) == GPIO_PIN_SET)
   {
     if ((HAL_GetTick() - tickstart) > 600U) return -1; /* Timeout */
   }
 
-  /* Leer 24 bits + 1 pulso (Canal A, Ganancia 128) sin interrupciones */
+  /* 2. Leer 24 bits + 1 pulso (Canal A, Ganancia 128) sin interrupciones */
   uint32_t primask = __get_PRIMASK();
   __disable_irq();
   for (uint8_t i = 0; i < 24; i++)
@@ -1019,17 +1021,47 @@ static int32_t HX711_ReadRaw(void)
     HX711_DelayUs();
     if (HAL_GPIO_ReadPin(HX711_DOUT_GPIO_Port, HX711_DOUT_Pin) == GPIO_PIN_SET) count++;
   }
+  /* Pulso 25: Canal A, Ganancia 128 */
   HAL_GPIO_WritePin(HX711_SCK_GPIO_Port, HX711_SCK_Pin, GPIO_PIN_SET);
   HX711_DelayUs();
   HAL_GPIO_WritePin(HX711_SCK_GPIO_Port, HX711_SCK_Pin, GPIO_PIN_RESET);
   HX711_DelayUs();
   __set_PRIMASK(primask);
 
-  /* Devolver SCK a LOW para mantener el sensor activo y el pin limpio */
-    HAL_GPIO_WritePin(HX711_SCK_GPIO_Port, HX711_SCK_Pin, GPIO_PIN_RESET);
+  if (count & 0x800000) count |= 0xFF000000;
+  return (int32_t)count;
+}
 
-    if (count & 0x800000) count |= 0xFF000000; /* Extensión de signo 24->32 bits */
-    return (int32_t)count;
+static int32_t HX711_ReadRaw(void)
+{
+  /* Descartar la primera lectura para limpiar registros */
+  if (HX711_ReadSingle() == -1)
+  {
+    HAL_GPIO_WritePin(HX711_SCK_GPIO_Port, HX711_SCK_Pin, GPIO_PIN_SET);
+    return -1;
+  }
+
+  /* Promediar 5 lecturas frescas */
+  int64_t sum = 0;
+  uint8_t valid_samples = 0;
+
+  for (uint8_t s = 0; s < 5; s++)
+  {
+    int32_t val = HX711_ReadSingle();
+    if (val != -1 && val != 0)
+    {
+      sum += val;
+      valid_samples++;
+    }
+  }
+
+  /* 3. ENVIAR EL HX711 A MODO DE BAJO CONSUMO (Power-Down) */
+  /* Mantener SCK en HIGH durante > 60 us apaga el chip (< 1 uA) */
+  HAL_GPIO_WritePin(HX711_SCK_GPIO_Port, HX711_SCK_Pin, GPIO_PIN_SET);
+  for (volatile uint32_t i = 0; i < 500; i++) { __NOP(); }
+
+  if (valid_samples == 0) return -1;
+  return (int32_t)(sum / valid_samples);
 }
 
 /* USER CODE END PrFD_LedEvents */
