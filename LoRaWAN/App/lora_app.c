@@ -330,8 +330,7 @@ static uint8_t AppDataBuffer[LORAWAN_APP_DATA_BUFFER_MAX_SIZE];
 /* Inicializar directamente en 600 segundos para que CubeMX no lo altere desde lora_app.h */
 static uint32_t TxDutyCycleTime = 600;
 
-/* Contador para los 3 destellos asíncronos (sin HAL_Delay) */
-static volatile uint8_t tx_led_blink_count = 0;
+
 
 #ifdef CAYENNE_LPP
 /**
@@ -417,8 +416,8 @@ void LoRaWAN_Init(void)
           (uint8_t)(rp_version.minor),
           (uint8_t)(rp_version.patch));
 
-  UTIL_TIMER_Create(&TxLedTimer, 150, UTIL_TIMER_ONESHOT, OnTxTimerLedEvent, NULL);
-  UTIL_TIMER_Create(&RxLedTimer, LED_PERIOD_TIME, UTIL_TIMER_ONESHOT, OnRxTimerLedEvent, NULL);
+  UTIL_TIMER_Create(&TxLedTimer, 50, UTIL_TIMER_ONESHOT, OnTxTimerLedEvent, NULL);
+  UTIL_TIMER_Create(&RxLedTimer, 50, UTIL_TIMER_ONESHOT, OnRxTimerLedEvent, NULL);
   UTIL_TIMER_Create(&JoinLedTimer, LED_PERIOD_TIME, UTIL_TIMER_PERIODIC, OnJoinTimerLedEvent, NULL);
 
   /* USER CODE END LoRaWAN_Init_1 */
@@ -444,7 +443,7 @@ void LoRaWAN_Init(void)
 
   /* USER CODE BEGIN LoRaWAN_Init_Last */
     UTIL_TIMER_Start(&JoinLedTimer);
-    if ((TxDutyCycleTime < 10) || (TxDutyCycleTime > 7200))
+    if ((TxDutyCycleTime < 600) || (TxDutyCycleTime > 7200))
     {
       TxDutyCycleTime = 600; // Valor por defecto seguro de 10 minutos (600 s)
     }
@@ -674,11 +673,7 @@ static void EventCallback(void)
         smtc_modem_get_status(STACK_ID, &status_mask);
         /* USER CODE BEGIN EventCallback_2 */
 
-              /* 1. Encender el LED verde fijo indicando estado OK en espera */
-              /* 👉 Iniciar los 3 destellos del LED verde sin bloquear (sin HAL_Delay) */
-                tx_led_blink_count = 5; /* 5 cambios de estado adicionales = 3 parpadeos completos */
-                HAL_GPIO_WritePin(LED2_GPIO_Port, LED2_Pin, GPIO_PIN_RESET); /* Apagar (venía fijo de Idle) */
-                UTIL_TIMER_Start(&TxLedTimer);
+
 
               if ((JoinLedTimer.IsRunning) && (status_mask & SMTC_MODEM_STATUS_JOINED) == SMTC_MODEM_STATUS_JOINED)
               {
@@ -744,7 +739,7 @@ static void EventCallback(void)
 
 				  if (channel == 11)
 				  {
-					if (new_interval_s >= 10)
+					if (new_interval_s >= 600)
 					{
 					  TxDutyCycleTime = new_interval_s;
 					  APP_LOG(TS_ON, VLEVEL_M, "Cayenne LPP Ch %d: Nuevo intervalo configurado -> %u s\r\n", channel, TxDutyCycleTime);
@@ -755,7 +750,7 @@ static void EventCallback(void)
 					}
 					else
 					{
-					  APP_LOG(TS_ON, VLEVEL_M, "Cayenne LPP Ch %d: Intervalo rechazado -> %u s\r\n", channel, new_interval_s);
+					  APP_LOG(TS_ON, VLEVEL_M, "Cayenne LPP Ch %d: Intervalo rechazado (< 600s) -> %u s\r\n", channel, new_interval_s);
 					}
 				  }
 				}
@@ -904,8 +899,6 @@ static void SendTxData(uint8_t port)
   sensor_t sensor_data;
   uint8_t bufferSize = 0;
 
-  /* Encender el LED para indicar actividad de transmisión */
-  HAL_GPIO_WritePin(LED2_GPIO_Port, LED2_Pin, GPIO_PIN_SET);
 
   /* 1. Lecturas reales del microcontrolador */
   int16_t temp_raw = SYS_GetTemperatureLevel();
@@ -959,6 +952,9 @@ static void SendTxData(uint8_t port)
     UTIL_TIMER_Stop(&JoinLedTimer);
     HAL_GPIO_WritePin(LED3_GPIO_Port, LED3_Pin, GPIO_PIN_RESET);
   }
+  /* Parpadeo corto (50 ms) del LED verde al enviar */
+    HAL_GPIO_WritePin(LED2_GPIO_Port, LED2_Pin, GPIO_PIN_SET);
+    UTIL_TIMER_Start(&TxLedTimer);
 
   ASSERT_SMTC_MODEM_RC(smtc_modem_request_uplink(STACK_ID, port, false, AppDataBuffer, bufferSize));
 
@@ -968,16 +964,7 @@ static void SendTxData(uint8_t port)
 /* USER CODE BEGIN PrFD_LedEvents */
 static void OnTxTimerLedEvent(void *context)
 {
-  if (tx_led_blink_count > 0)
-  {
-    tx_led_blink_count--;
-    HAL_GPIO_TogglePin(LED2_GPIO_Port, LED2_Pin); /* Alterna ON / OFF cada 150 ms */
-    UTIL_TIMER_Start(&TxLedTimer);                /* Programa el siguiente cambio */
-  }
-  else
-  {
-    HAL_GPIO_WritePin(LED2_GPIO_Port, LED2_Pin, GPIO_PIN_SET); /* 👈 Queda encendido fijo (Idle) al terminar los destellos */
-  }
+  HAL_GPIO_WritePin(LED2_GPIO_Port, LED2_Pin, GPIO_PIN_RESET); /* LED_GREEN OFF */
 }
 
 static void OnRxTimerLedEvent(void *context)
